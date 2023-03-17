@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+
+import pprint
+import requests
+import json
+import sys
+from pysnmp.hlapi import *
+from pyzabbix import ZabbixAPI
+
+
+#Funçao para descobrir as ONUS, o INDEX, o nome e a pon que ela está ligada
+def onuDiscovery():
+
+#Verifica se o comando tem menos de 5 argumentos e indica a maneira certa de usar
+    if len(sys.argv) < 5:
+        print(f'Usage: {sys.argv[0]} <ip> <community> <version> <port>')
+        sys.exit(1)
+
+    ip = sys.argv[2]
+    community = sys.argv[3]
+    version = sys.argv[4]
+    port = int(sys.argv[5])
+
+# Se o usuario utilizar 2c na comunidade ao inves de 2, transorma para 2
+    if version  == "2c":
+        version = 2
+
+
+    # Faz o SNMP walk na OID das interfaces e armazena os nomes em um dicionário
+#    pon_discovery = []
+    interface_dict = {}
+    interface_oid = ObjectIdentity('1.3.6.1.2.1.31.1.1.1.1')
+    iterator = nextCmd(SnmpEngine(),
+                       CommunityData(community, mpModel=version-1),
+                       UdpTransportTarget((ip, port)),
+                       ContextData(),
+                       ObjectType(interface_oid),
+                       lexicographicMode=False)
+    for errorIndication, errorStatus, errorIndex, varBinds in iterator:
+        if errorIndication:
+            print(errorIndication)
+        elif errorStatus:
+            print('%s at %s' % (errorStatus.prettyPrint(),
+                                errorIndex and varBinds[int(errorIndex) - 1][0] or '?'))
+        else:
+            for varBind in varBinds:
+                oid = str(varBind[0])
+                value = str(varBind[1])
+                index = '.'.join(oid.split('.')[-1:])
+                interface_dict[index] = value.replace("GPON ", "")
+
+#SNMP armazenar Alias Board
+    alias_name = {}
+    alias_oid = ObjectIdentity('1.3.6.1.2.1.31.1.1.1.18')
+    iterator = nextCmd(SnmpEngine(),
+                       CommunityData(community, mpModel=version-1),
+                       UdpTransportTarget((ip, port)),
+                       ContextData(),
+                       ObjectType(alias_oid),
+                       lexicographicMode=False)
+    for errorIndication, errorStatus, errorIndex, varBinds in iterator:
+        if errorIndication:
+            print(errorIndication)
+        elif errorStatus:
+            print('%s at %s' % (errorStatus.prettyPrint(),
+                                errorIndex and varBinds[int(errorIndex) - 1][0] or '?'))
+        else:
+            for varBind in varBinds:
+                oid = str(varBind[0])
+                value = str(varBind[1])[:30]
+                index = '.'.join(oid.split('.')[-1:])
+                alias_name[index] = value
+
+#    pprint.pprint(alias_name)
+#       # Faz o SNMP walk na OID das ONUs
+    onu_oid = ObjectIdentity('1.3.6.1.4.1.2011.6.128.1.1.2.43.1.9')
+    iterator = nextCmd(SnmpEngine(),
+                       CommunityData(community, mpModel=version-1),
+                       UdpTransportTarget((ip, port)),
+                       ContextData(),
+                       ObjectType(onu_oid),
+                       lexicographicMode=False)
+
+    # Armazena o resultado em uma lista de dicionários
+    data = []
+    for errorIndication, errorStatus, errorIndex, varBinds in iterator:
+        if errorIndication:
+            print(errorIndication)
+        elif errorStatus:
+            print('%s at %s' % (errorStatus.prettyPrint(),
+                                errorIndex and varBinds[int(errorIndex) - 1][0] or '?'))
+        else:
+            # Para cada resultado, obtém a última parte do OID e o valor e adiciona a um dicionário
+            for varBind in varBinds:
+                oid = str(varBind[0])
+                value = str(varBind[1])[:40]
+                index = '.'.join(oid.split('.')[-2:])
+                indexinterface = '.'.join(oid.split('.')[-2:-1])
+                interface = interface_dict.get(indexinterface, "UNKNOWN")
+                interface_name = alias_name.get(indexinterface, "UNKNOWN")
+                data.append({
+                    "{#SNMPINDEX}": index,
+                    "{#ONUNAME}": value,
+                    "{#PONNAME}": interface,
+#                    "{#PONALIAS}": interface_name,
+                    "{#PONPORT}": indexinterface
+                })
+#    pprint.pprint(alias)
+    # Imprime o resultado em formato JSON
+    print(json.dumps(data, indent=1))
+    exit
+
+# Funcao para conta a quantidade de ONU offline e online na OLT e nas portas PON
+def onuCount():
+
+    oid = ObjectIdentity('1.3.6.1.4.1.2011.6.128.1.1.2.46.1.15')
+
+    if len(sys.argv) < 5:
+        print(f'Usage: {sys.argv[0]} <ip> <community> <version> <port>')
+        sys.exit(1)
+
+    ip = sys.argv[2]
+    community = sys.argv[3]
+    version = sys.argv[4]
+    port = int(sys.argv[5])
+# Se o usuario utilizar 2c na comunidade ao inves de 2, transorma para 2
+    if version  == "2c":
+        version = 2
+
+    oid_suffix = None
+    status = None
+    if len(sys.argv) > 7:
+        status = sys.argv[7]
+        oid_suffix = sys.argv[6]
+        oid = ObjectIdentity('1.3.6.1.4.1.2011.6.128.1.1.2.46.1.15.' + oid_suffix)
+
+    # Inicializa as variáveis para contagem dos valores INTEGER
+    count_int_1 = 0
+    count_int_2 = 0
+
+    # Realiza o SNMP walk na OID
+    iterator = nextCmd(SnmpEngine(),
+                       CommunityData(community, mpModel=version-1),
+                       UdpTransportTarget((ip, port)),
+                       ContextData(),
+                       ObjectType(oid),
+                       lexicographicMode=False)
+
+    # Percorre os resultados do SNMP walk
+    for errorIndication, errorStatus, errorIndex, varBinds in iterator:
+        if errorIndication:
+            print(errorIndication)
+        elif errorStatus:
+            print('%s at %s' % (errorStatus.prettyPrint(),
+                                errorIndex and varBinds[int(errorIndex) - 1][0] or '?'))
+        else:
+            # Para cada resultado, verifica se é do tipo INTEGER e se tem valor 1 ou 2
+            for varBind in varBinds:
+                value = varBind[1]
+                if isinstance(value, Integer):
+                    if value == 1:
+                        count_int_1 += 1
+                    elif value == 2:
+                        count_int_2 += 1
+
+    # Soma todos os valores em count_int 1 e 2 apos a soma
+    count_int_total = count_int_1 + count_int_2
+
+    # Imprime o resultado
+    if status == 'online':
+        print(f'ONLINE: {count_int_1}')
+    elif status == 'offline':
+        print(f'OFFLINE: {count_int_2}')
+    else:
+        print(f'ONLINE: {count_int_1}')
+        print(f'OFFLINE: {count_int_2}')
+        print(f'TOTAL: {count_int_total}')
+
+# Funcao para contar as razões das ONUs estarem offline
+def onuReasonCount():
+
+
+    ip = sys.argv[2]
+    community = sys.argv[3]
+    version = sys.argv[4]
+    port = int(sys.argv[5])
+#    pon_id = sys.argv[6]
+    onu_port_list = []
+
+    onu_status_list = []
+    oid_onu_status = ObjectIdentity('1.3.6.1.4.1.2011.6.128.1.1.2.46.1.15')
+    oid_onu_port = ObjectIdentity('1.3.6.1.4.1.2011.6.128.1.1.2.46.1.24')
+# Se o usuario utilizar 2c na comunidade ao inves de 2, transorma para 2
+    if version  == "2c":
+        version = 2
+
+
+    # Realiza o SNMP walk na OID de status das ONU
+    iterator = nextCmd(SnmpEngine(),
+                       CommunityData(community, mpModel=version-1),
+                       UdpTransportTarget((ip, port)),
+                       ContextData(),
+                       ObjectType(oid_onu_status),
+                       lexicographicMode=False)
+
+    # Percorre os resultados do SNMP walk
+    for errorIndication, errorStatus, errorIndex, varBinds in iterator:
+        if errorIndication:
+            print(errorIndication)
+        elif errorStatus:
+            print('%s at %s' % (errorStatus.prettyPrint(),
+                                errorIndex and varBinds[int(errorIndex) - 1][0] or '?'))
+        else:
+            # Para cada resultado, verifica se é do tipo INTEGER e se tem valor 2
+            for varBind in varBinds:
+                value = varBind[1]
+                if isinstance(value, Integer):
+                    if value == 2:
+                        onu_status_list.append(varBind[0].split('.')[-1])
+    # Realiza o SNMP walk na OID de portas das ONU
+    iterator = nextCmd(SnmpEngine(),
+                       CommunityData(community, mpModel=version-1),
+                       UdpTransportTarget((ip, port)),
+                       ContextData(),
+                       ObjectType(oid_onu_port),
+                       lexicographicMode=False)
+
+    # Percorre os resultados do SNMP walk
+    for errorIndication, errorStatus, errorIndex, varBinds in iterator:
+        if errorIndication:
+            print(errorIndication)
+        elif errorStatus:
+            print('%s at %s' % (errorStatus.prettyPrint(),
+                                errorIndex and varBinds[int(errorIndex) - 1][0] or '?'))
+        else:
+            # Para cada resultado, verifica se o index está na lista de status 2
+            for varBind in varBinds:
+                index = varBind[0].split('.')[-1]
+                if index in onu_status_list:
+                    onu_port_list.append(index + ' => ' + str(varBind[1]))
+
+    # Imprime a lista de portas com status 2
+    for port in onu_port_list:
+        print(port)
+
+
+def ponDiscovery():
+
+    import subprocess
+
+#Verifica se o comando tem menos de 5 argumentos e indica a maneira certa de usar
+    if len(sys.argv) < 5:
+        print(f'Usage: {sys.argv[0]} <ip> <community> <version> <port> <hostname>')
+        sys.exit(1)
+
+    ip = sys.argv[2]
+    community = sys.argv[3]
+    version = sys.argv[4]
+    port = int(sys.argv[5])
+    hostname = sys.argv[6]
+
+# Se o usuario utilizar 2c na comunidade ao inves de 2, transorma para 2
+    if version  == "2c":
+        version = 2
+
+
+    # Faz o SNMP walk na OID das interfaces e armazena os nomes em um dicionário
+    pon_discovery = []
+    interface_dict = {}
+    interface_oid = ObjectIdentity('1.3.6.1.2.1.31.1.1.1.1')
+    iterator = nextCmd(SnmpEngine(),
+                       CommunityData(community, mpModel=version-1),
+                       UdpTransportTarget((ip, port)),
+                       ContextData(),
+                       ObjectType(interface_oid),
+                       lexicographicMode=False)
+    for errorIndication, errorStatus, errorIndex, varBinds in iterator:
+        if errorIndication:
+            print(errorIndication)
+        elif errorStatus:
+            print('%s at %s' % (errorStatus.prettyPrint(),
+                                errorIndex and varBinds[int(errorIndex) - 1][0] or '?'))
+        else:
+            for varBind in varBinds:
+                oid = str(varBind[0])
+                value = str(varBind[1])
+                index = '.'.join(oid.split('.')[-1:])
+                interface_dict[index] = value.replace("GPON ", "")
+                pon_discovery.append({
+                    "{#PONPORT}": index,
+                    "{#PONNAME}": value.replace("GPON ", "")
+                })
+    pon_discovery_json = json.dumps(pon_discovery)
+#    pprint.pprint(pon_discovery)
+    cmd = ['zabbix_sender', '-z', '127.0.0.1', '-s', hostname, '-k', 'pondiscovery', '-o', pon_discovery_json]
+    subprocess.run(cmd, check=True)
+
+
+if sys.argv[1] == 'onudiscovery':
+    onuDiscovery()
+elif sys.argv[1] == 'onucount':
+    onuCount()
+elif sys.argv[1] == 'onureasoncount':
+    onuReasonCount()
+elif sys.argv[1] == 'pondiscovery':
+    ponDiscovery()
+else:
+    print('Opção inválida')
+    sys.exit(1)
